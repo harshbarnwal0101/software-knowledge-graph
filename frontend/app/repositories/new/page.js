@@ -101,15 +101,13 @@ export default function NewRepositoryPage() {
             </form>
           </div>
 
-          {/* Phase note */}
           <div style={{
             marginTop: "1rem", padding: "0.875rem 1rem",
             background: "var(--muted)", borderRadius: "var(--radius)",
             fontSize: "0.8125rem", color: "var(--muted-foreground)",
             border: "1px solid var(--border)"
           }}>
-            <strong style={{ color: "var(--foreground)" }}>Phase 1</strong> — Repository registration is live.
-            Full analysis (parsing, graph building, embeddings) is coming in Phase 2.
+            Analysis will start <strong style={{ color: "var(--foreground)" }}>automatically</strong> after the repository is added — cloning, parsing, graph building, and embeddings all happen in the background.
           </div>
         </div>
       </main>

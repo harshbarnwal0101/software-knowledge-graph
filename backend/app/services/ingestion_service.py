@@ -44,18 +44,24 @@ async def run_analysis(repo_id: str):
         result = await db.execute(select(Repository).where(Repository.id == repo_id))
         repo = result.scalar_one_or_none()
         if not repo:
-            logger.error(f"Repository {repo_id} not found")
+            logger.error(f"[INGESTION] Repository {repo_id} not found — aborting.")
             return
 
-        logger.info(f"Starting analysis for {repo.name} ({repo_id})")
+        logger.info(f"[INGESTION] Starting analysis for {repo.name} ({repo_id})")
 
         # ── 2. Clone ─────────────────────────────────────────────
         await _update_status(db, repo_id, RepoStatus.cloning, "Cloning repository…")
         try:
             import asyncio
-            repo_path = await asyncio.to_thread(clone_repository, repo_id, repo.github_url)
+            logger.info(f"[INGESTION] Starting clone: {repo.github_url}")
+            repo_path = await asyncio.to_thread(
+                clone_repository,
+                repo_id,
+                repo.github_url
+            )
+            logger.info(f"[INGESTION] Clone completed → {repo_path}")
         except Exception as e:
-            logger.error(f"Clone failed for {repo_id}: {e}")
+            logger.error(f"[INGESTION] Clone failed for {repo_id}: {e}")
             await _update_status(db, repo_id, RepoStatus.failed, f"Clone failed: {str(e)[:200]}")
             return
 
@@ -63,9 +69,9 @@ async def run_analysis(repo_id: str):
         await _update_status(db, repo_id, RepoStatus.parsing, "Discovering and parsing files…")
         try:
             files = await asyncio.to_thread(registry.discover_files, repo_path)
-            logger.info(f"Discovered {len(files)} source files in {repo.name}")
+            logger.info(f"[INGESTION] Discovered {len(files)} source files in {repo.name}")
         except Exception as e:
-            logger.error(f"File discovery failed: {e}")
+            logger.error(f"[INGESTION] File discovery failed: {e}")
             await _update_status(db, repo_id, RepoStatus.failed, f"File discovery failed: {str(e)[:200]}")
             return
 
@@ -186,13 +192,15 @@ async def run_analysis(repo_id: str):
                     })
 
             except Exception as e:
-                logger.warning(f"Failed to parse {file_path}: {e}")
+                logger.warning(f"[INGESTION] Failed to parse {file_path}: {e}")
                 parse_errors += 1
 
         await db.commit()
+        logger.info(f"[INGESTION] Parsing completed — {len(file_records_list)} files, {len(symbols_list)} symbols")
 
         # ── 6. Build Knowledge Graph in Neo4j ──────────────────────
         await _update_status(db, repo_id, RepoStatus.building_graph, "Building knowledge graph…")
+        logger.info(f"[INGESTION] Building knowledge graph in Neo4j…")
         try:
             await asyncio.to_thread(
                 neo4j_service.build_repository_graph,
@@ -201,15 +209,18 @@ async def run_analysis(repo_id: str):
                 file_records_list,
                 symbols_list,
             )
+            logger.info(f"[INGESTION] Knowledge graph built successfully")
         except Exception as e:
-            logger.warning(f"Neo4j graph building failed: {e}")
+            logger.warning(f"[INGESTION] Neo4j graph building failed (non-fatal): {e}")
 
         # ── 7. Generate Vector Embeddings in Qdrant ────────────────
         await _update_status(db, repo_id, RepoStatus.embedding, "Generating vector embeddings…")
+        logger.info(f"[INGESTION] Generating vector embeddings in Qdrant ({len(chunks_for_embedding)} chunks)…")
         try:
             await asyncio.to_thread(vector_service.index_chunks, repo_id, chunks_for_embedding)
+            logger.info(f"[INGESTION] Vector embeddings generated successfully")
         except Exception as e:
-            logger.warning(f"Vector embedding failed: {e}")
+            logger.warning(f"[INGESTION] Vector embedding failed (non-fatal): {e}")
 
         # ── 8. Update repository status to Ready ──────────────────
         result = await db.execute(select(Repository).where(Repository.id == repo_id))
@@ -228,6 +239,6 @@ async def run_analysis(repo_id: str):
             await db.commit()
 
         logger.info(
-            f"Analysis complete for {repo_id}: "
+            f"[INGESTION] Analysis complete for {repo_id}: "
             f"{len(files)} files, {total_classes} classes, {total_functions} functions"
         )

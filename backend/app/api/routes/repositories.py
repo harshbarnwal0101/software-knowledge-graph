@@ -52,9 +52,13 @@ def _validate_github_url(url: str) -> bool:
 
 # ── CRUD ──────────────────────────────────────────────────────
 
+import logging as _logging
+_repo_logger = _logging.getLogger(__name__)
+
 @router.post("", response_model=RepositoryOut, status_code=status.HTTP_201_CREATED)
 async def create_repository(
     body: RepositoryCreate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -69,10 +73,16 @@ async def create_repository(
         description=body.description,
         github_url=body.github_url,
         status=RepoStatus.pending,
+        status_message="Analysis queued…",
     )
     db.add(repo)
     await db.commit()
     await db.refresh(repo)
+
+    repo_id = str(repo.id)
+    _repo_logger.info(f"[REPOSITORY] Scheduling analysis for {repo_id} ({repo.name})")
+    background_tasks.add_task(run_analysis, repo_id)
+
     return repo
 
 
