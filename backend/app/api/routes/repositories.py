@@ -13,6 +13,8 @@ from app.models.symbol import Symbol
 from app.api.schemas import RepositoryCreate, RepositoryOut
 from app.api.deps import get_current_user
 from app.services.ingestion_service import run_analysis
+from app.services.impact_service import analyze_impact
+from app.services.git_service import get_repo_path, get_git_log
 from app.graph.neo4j_service import neo4j_service
 from app.retrieval.hybrid_search import hybrid_search
 from app.agents.codebase_agent import codebase_agent
@@ -27,6 +29,10 @@ class SearchRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     question: str
+
+
+class ImpactRequest(BaseModel):
+    target_name: str
 
 
 def _extract_repo_name(github_url: str) -> str:
@@ -209,7 +215,7 @@ async def get_repository_graph(
     return data
 
 
-# ── Semantic Search Endpoint ──────────────────────────────────
+# ── Search Endpoint ───────────────────────────────────────────
 
 @router.post("/{repo_id}/search")
 async def search_repository(
@@ -235,6 +241,34 @@ async def chat_with_repository(
     await _get_owned_repo(db, repo_id, current_user.id)
     response = await codebase_agent.answer_question(repo_id, body.question)
     return response
+
+
+# ── Impact Analysis Endpoint ──────────────────────────────────
+
+@router.post("/{repo_id}/impact-analysis")
+async def get_impact_analysis(
+    repo_id: str,
+    body: ImpactRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repo(db, repo_id, current_user.id)
+    result = await analyze_impact(db, repo_id, body.target_name)
+    return result
+
+
+# ── Git History Insights Endpoint ─────────────────────────────
+
+@router.get("/{repo_id}/history")
+async def get_repository_history(
+    repo_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repo(db, repo_id, current_user.id)
+    repo_path = get_repo_path(repo_id)
+    commits = get_git_log(repo_path, max_commits=30)
+    return {"commits": commits}
 
 
 # ── Helpers ───────────────────────────────────────────────────
