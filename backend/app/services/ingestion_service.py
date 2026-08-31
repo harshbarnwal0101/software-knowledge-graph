@@ -2,7 +2,7 @@
 Ingestion service — orchestrates the full repository analysis pipeline.
 
 Pipeline:
-  clone → discover files → parse → extract symbols → update DB stats → done
+  clone → discover files → parse → extract symbols → build graph → update DB stats → done
 """
 import logging
 import uuid
@@ -17,6 +17,7 @@ from app.models.file_record import FileRecord
 from app.models.symbol import Symbol
 from app.services.git_service import clone_repository, delete_repository
 from app.parsers.registry import registry
+from app.graph.neo4j_service import neo4j_service
 from app.core.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,9 @@ async def run_analysis(repo_id: str):
         total_functions = 0
         parse_errors = 0
 
+        file_records_list = []
+        symbols_list = []
+
         for file_path in files:
             try:
                 parsed = registry.parse_file(file_path)
@@ -86,8 +90,9 @@ async def run_analysis(repo_id: str):
                 relative_path = str(file_path.relative_to(repo_path))
 
                 # Store FileRecord
+                f_id = str(uuid.uuid4())
                 file_record = FileRecord(
-                    id=str(uuid.uuid4()),
+                    id=f_id,
                     repo_id=repo_id,
                     path=relative_path,
                     language=parsed.language,
@@ -95,7 +100,14 @@ async def run_analysis(repo_id: str):
                     size_bytes=file_path.stat().st_size,
                 )
                 db.add(file_record)
-                await db.flush()  # Get file_record.id
+                await db.flush()
+
+                file_records_list.append({
+                    "id": f_id,
+                    "path": relative_path,
+                    "language": parsed.language,
+                    "lines": parsed.lines,
+                })
 
                 total_lines += parsed.lines
                 total_classes += len(parsed.classes)
@@ -106,10 +118,11 @@ async def run_analysis(repo_id: str):
 
                 # Store symbols
                 for sym in parsed.symbols:
+                    s_id = str(uuid.uuid4())
                     db.add(Symbol(
-                        id=str(uuid.uuid4()),
+                        id=s_id,
                         repo_id=repo_id,
-                        file_id=file_record.id,
+                        file_id=f_id,
                         file_path=relative_path,
                         language=parsed.language,
                         symbol_type=sym.symbol_type,
@@ -122,13 +135,38 @@ async def run_analysis(repo_id: str):
                         signature=sym.signature,
                     ))
 
+                    symbols_list.append({
+                        "id": s_id,
+                        "file_id": f_id,
+                        "file_path": relative_path,
+                        "language": parsed.language,
+                        "type": sym.symbol_type,
+                        "name": sym.name,
+                        "qualified_name": sym.qualified_name,
+                        "line_start": sym.line_start,
+                        "line_end": sym.line_end,
+                        "signature": sym.signature,
+                    })
+
             except Exception as e:
                 logger.warning(f"Failed to parse {file_path}: {e}")
                 parse_errors += 1
 
         await db.commit()
 
-        # ── 6. Update repository stats ────────────────────────────
+        # ── 6. Build Knowledge Graph in Neo4j ──────────────────────
+        await _update_status(db, repo_id, RepoStatus.building_graph, "Building knowledge graph…")
+        try:
+            neo4j_service.build_repository_graph(
+                repo_id=repo_id,
+                repo_name=repo.name,
+                file_records=file_records_list,
+                symbols=symbols_list,
+            )
+        except Exception as e:
+            logger.warning(f"Neo4j graph building failed: {e}")
+
+        # ── 7. Update repository stats ────────────────────────────
         result = await db.execute(select(Repository).where(Repository.id == repo_id))
         repo = result.scalar_one_or_none()
         if repo:

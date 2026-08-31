@@ -12,6 +12,7 @@ from app.models.symbol import Symbol
 from app.api.schemas import RepositoryCreate, RepositoryOut
 from app.api.deps import get_current_user
 from app.services.ingestion_service import run_analysis
+from app.graph.neo4j_service import neo4j_service
 
 router = APIRouter()
 
@@ -81,7 +82,6 @@ async def delete_repository(
     repo = await _get_owned_repo(db, repo_id, current_user.id)
     await db.delete(repo)
     await db.commit()
-    # Clean up cloned files
     try:
         from app.services.git_service import delete_repository as delete_clone
         delete_clone(repo_id)
@@ -98,16 +98,11 @@ async def analyze_repository(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Trigger repository analysis pipeline in the background.
-    Returns 202 immediately. Poll GET /repositories/{id} for status.
-    """
     repo = await _get_owned_repo(db, repo_id, current_user.id)
 
     if repo.status in (RepoStatus.cloning, RepoStatus.parsing, RepoStatus.building_graph, RepoStatus.embedding):
         raise HTTPException(status_code=409, detail="Analysis already in progress")
 
-    # Reset status
     repo.status = RepoStatus.pending
     repo.status_message = "Analysis queued…"
     await db.commit()
@@ -182,6 +177,75 @@ async def list_symbols(
         }
         for s in symbols
     ]
+
+
+# ── Graph API ─────────────────────────────────────────────────
+
+@router.get("/{repo_id}/graph")
+async def get_repository_graph(
+    repo_id: str,
+    limit: int = 150,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repo(db, repo_id, current_user.id)
+
+    # 1. Try fetching from Neo4j
+    data = neo4j_service.get_graph_data(repo_id, max_nodes=limit)
+
+    # 2. Fallback: generate graph from SQL symbols & file records if Neo4j is empty or unready
+    if not data or not data.get("nodes"):
+        result_files = await db.execute(select(FileRecord).where(FileRecord.repo_id == repo_id).limit(40))
+        files = result_files.scalars().all()
+
+        result_symbols = await db.execute(select(Symbol).where(Symbol.repo_id == repo_id).limit(100))
+        symbols = result_symbols.scalars().all()
+
+        nodes = []
+        edges = []
+
+        # Add file nodes
+        file_node_ids = {}
+        for idx, f in enumerate(files):
+            nid = f"file_{f.id}"
+            file_node_ids[f.path] = nid
+            nodes.append({
+                "id": nid,
+                "type": "file",
+                "data": {
+                    "label": f.path.split("/")[-1],
+                    "path": f.path,
+                    "language": f.language,
+                    "nodeType": "File"
+                }
+            })
+
+        # Add symbol nodes & DEFINES edges
+        for s in symbols:
+            sid = f"sym_{s.id}"
+            nodes.append({
+                "id": sid,
+                "type": s.symbol_type,
+                "data": {
+                    "label": s.name,
+                    "path": s.file_path,
+                    "line": s.line_start,
+                    "signature": s.signature,
+                    "nodeType": s.symbol_type.capitalize()
+                }
+            })
+            # Connect file -> symbol
+            if s.file_path in file_node_ids:
+                edges.append({
+                    "id": f"e_{file_node_ids[s.file_path]}_{sid}_DEFINES",
+                    "source": file_node_ids[s.file_path],
+                    "target": sid,
+                    "label": "DEFINES"
+                })
+
+        data = {"nodes": nodes, "edges": edges}
+
+    return data
 
 
 # ── Helpers ───────────────────────────────────────────────────

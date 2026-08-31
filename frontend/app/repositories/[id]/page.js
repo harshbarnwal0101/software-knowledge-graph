@@ -6,14 +6,13 @@ import Sidebar from "@/components/Sidebar";
 import { repoApi } from "@/lib/api";
 import api from "@/lib/api";
 
-// Steps shown during ingestion
 const PIPELINE_STEPS = [
-  { key: "pending",       label: "Queued for analysis" },
-  { key: "cloning",       label: "Cloning repository" },
-  { key: "parsing",       label: "Parsing source files" },
-  { key: "building_graph",label: "Building knowledge graph" },
-  { key: "embedding",     label: "Generating embeddings" },
-  { key: "ready",         label: "Analysis complete" },
+  { key: "pending",        label: "Queued for analysis" },
+  { key: "cloning",        label: "Cloning repository" },
+  { key: "parsing",        label: "Parsing source files" },
+  { key: "building_graph", label: "Building knowledge graph" },
+  { key: "embedding",      label: "Generating embeddings" },
+  { key: "ready",          label: "Analysis complete" },
 ];
 
 const STATUS_ORDER = ["pending", "cloning", "parsing", "building_graph", "embedding", "ready"];
@@ -57,7 +56,6 @@ export default function RepositoryPage() {
     if (symbolsRes.status === "fulfilled") setSymbols(symbolsRes.value.data);
   }, [id]);
 
-  // Polling during analysis
   const startPolling = useCallback(() => {
     if (pollRef.current) return;
     pollRef.current = setInterval(async () => {
@@ -116,7 +114,6 @@ export default function RepositoryPage() {
   const functions = symbols.filter(s => s.type === "function" || s.type === "method");
   const imports = symbols.filter(s => s.type === "import");
 
-  // Language breakdown
   const langCount = {};
   files.forEach(f => { langCount[f.language] = (langCount[f.language] || 0) + 1; });
 
@@ -132,6 +129,11 @@ export default function RepositoryPage() {
             <span style={{ color: "var(--foreground)", fontWeight: 500 }}>{repo.name}</span>
           </nav>
           <div style={{ flex: 1 }} />
+          {isReady && (
+            <Link href={`/repositories/${id}/graph`} className="btn btn-secondary btn-sm" style={{ color: "#38bdf8" }}>
+              📊 Open Graph Explorer
+            </Link>
+          )}
           <a href={repo.github_url} target="_blank" rel="noopener noreferrer" className="btn btn-secondary btn-sm">
             GitHub ↗
           </a>
@@ -159,7 +161,7 @@ export default function RepositoryPage() {
             </p>
           </div>
 
-          {/* ── Analysis Progress ── */}
+          {/* Ingestion Progress */}
           {(isInProgress || isFailed) && (
             <div className="card" style={{ padding: "1.25rem", marginBottom: "1.5rem" }}>
               <div style={{ fontWeight: 500, marginBottom: "1rem", fontSize: "0.9375rem" }}>
@@ -191,7 +193,7 @@ export default function RepositoryPage() {
             </div>
           )}
 
-          {/* ── Stats ── */}
+          {/* Stats */}
           <div className="grid-4" style={{ marginBottom: "1.5rem" }}>
             {[
               { label: "Files", value: repo.total_files },
@@ -206,7 +208,7 @@ export default function RepositoryPage() {
             ))}
           </div>
 
-          {/* ── Tabs ── */}
+          {/* Tabs */}
           {isReady && (
             <>
               <div style={{ display: "flex", gap: "0.125rem", borderBottom: "1px solid var(--border)", marginBottom: "1.25rem" }}>
@@ -233,7 +235,7 @@ export default function RepositoryPage() {
                 ))}
               </div>
 
-              {activeTab === "overview" && <OverviewTab files={files} langCount={langCount} symbols={symbols} />}
+              {activeTab === "overview" && <OverviewTab repoId={id} files={files} langCount={langCount} symbols={symbols} />}
               {activeTab === "files" && <FilesTab files={files} />}
               {activeTab === "classes" && <SymbolsTab symbols={classes} label="Classes" />}
               {activeTab === "functions" && <SymbolsTab symbols={functions} label="Functions & Methods" />}
@@ -241,13 +243,13 @@ export default function RepositoryPage() {
             </>
           )}
 
-          {/* ── Not yet analyzed ── */}
+          {/* Not yet analyzed */}
           {repo.status === "pending" && !isInProgress && (
             <div className="card" style={{ padding: "1.5rem" }}>
               <div style={{ fontWeight: 500, marginBottom: "0.375rem" }}>Ready to analyze</div>
               <p className="text-sm text-muted" style={{ marginBottom: "1rem" }}>
-                Click <strong>Analyze</strong> to clone the repository, parse all source files,
-                extract classes, functions, and imports, and build the knowledge graph.
+                Click <strong>Start Analysis</strong> to clone the repository, parse source files,
+                extract symbols, and generate the interactive software knowledge graph.
               </p>
               <button className="btn btn-primary" onClick={handleAnalyze}>
                 Start Analysis
@@ -260,33 +262,45 @@ export default function RepositoryPage() {
   );
 }
 
-// ── Sub-components ───────────────────────────────────────────
-
-function OverviewTab({ files, langCount, symbols }) {
+function OverviewTab({ repoId, files, langCount, symbols }) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-      <div className="card" style={{ padding: "1.25rem" }}>
-        <div style={{ fontWeight: 500, marginBottom: "0.875rem", fontSize: "0.9375rem" }}>Languages</div>
-        {Object.entries(langCount).sort((a, b) => b[1] - a[1]).map(([lang, count]) => (
-          <div key={lang} style={{ display: "flex", justifyContent: "space-between", padding: "0.375rem 0", borderBottom: "1px solid var(--border)", fontSize: "0.875rem" }}>
-            <span style={{ textTransform: "capitalize" }}>{lang}</span>
-            <span className="text-muted">{count} files</span>
+    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      <div className="card" style={{ padding: "1.25rem", background: "linear-gradient(135deg, rgba(30,41,59,0.5) 0%, rgba(15,23,42,0.5) 100%)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <h3 style={{ fontSize: "1rem", fontWeight: 600, margin: "0 0 0.25rem" }}>Software Knowledge Graph Ready</h3>
+            <p className="text-sm text-muted">Explore files, functions, classes, and dependencies as an interactive node graph.</p>
           </div>
-        ))}
+          <Link href={`/repositories/${repoId}/graph`} className="btn btn-primary">
+            Explore Graph ➔
+          </Link>
+        </div>
       </div>
-      <div className="card" style={{ padding: "1.25rem" }}>
-        <div style={{ fontWeight: 500, marginBottom: "0.875rem", fontSize: "0.9375rem" }}>Symbol Types</div>
-        {[
-          ["Classes", symbols.filter(s => s.type === "class").length],
-          ["Functions", symbols.filter(s => s.type === "function").length],
-          ["Methods", symbols.filter(s => s.type === "method").length],
-          ["Imports", symbols.filter(s => s.type === "import").length],
-        ].map(([label, count]) => (
-          <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "0.375rem 0", borderBottom: "1px solid var(--border)", fontSize: "0.875rem" }}>
-            <span>{label}</span>
-            <span className="text-muted">{count}</span>
-          </div>
-        ))}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+        <div className="card" style={{ padding: "1.25rem" }}>
+          <div style={{ fontWeight: 500, marginBottom: "0.875rem", fontSize: "0.9375rem" }}>Languages</div>
+          {Object.entries(langCount).sort((a, b) => b[1] - a[1]).map(([lang, count]) => (
+            <div key={lang} style={{ display: "flex", justifyContent: "space-between", padding: "0.375rem 0", borderBottom: "1px solid var(--border)", fontSize: "0.875rem" }}>
+              <span style={{ textTransform: "capitalize" }}>{lang}</span>
+              <span className="text-muted">{count} files</span>
+            </div>
+          ))}
+        </div>
+        <div className="card" style={{ padding: "1.25rem" }}>
+          <div style={{ fontWeight: 500, marginBottom: "0.875rem", fontSize: "0.9375rem" }}>Symbol Breakdown</div>
+          {[
+            ["Classes", symbols.filter(s => s.type === "class").length],
+            ["Functions", symbols.filter(s => s.type === "function").length],
+            ["Methods", symbols.filter(s => s.type === "method").length],
+            ["Imports", symbols.filter(s => s.type === "import").length],
+          ].map(([label, count]) => (
+            <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "0.375rem 0", borderBottom: "1px solid var(--border)", fontSize: "0.875rem" }}>
+              <span>{label}</span>
+              <span className="text-muted">{count}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -313,7 +327,6 @@ function FilesTab({ files }) {
             ))}
           </tbody>
         </table>
-        {filtered.length > 200 && <p className="text-xs text-muted" style={{padding:"0.75rem"}}>Showing 200 of {filtered.length} files</p>}
       </div>
     </div>
   );
@@ -347,8 +360,6 @@ function SymbolsTab({ symbols, label }) {
             ))}
           </tbody>
         </table>
-        {filtered.length === 0 && <div className="empty-state"><p>No results found</p></div>}
-        {filtered.length > 200 && <p className="text-xs text-muted" style={{padding:"0.75rem"}}>Showing 200 of {filtered.length}</p>}
       </div>
     </div>
   );
