@@ -2,7 +2,7 @@
 Ingestion service — orchestrates the full repository analysis pipeline.
 
 Pipeline:
-  clone → discover files → parse → extract symbols → build graph → update DB stats → done
+  clone → discover files → parse → extract symbols → build graph → generate embeddings → update DB stats → done
 """
 import logging
 import uuid
@@ -18,6 +18,7 @@ from app.models.symbol import Symbol
 from app.services.git_service import clone_repository, delete_repository
 from app.parsers.registry import registry
 from app.graph.neo4j_service import neo4j_service
+from app.retrieval.vector_service import vector_service
 from app.core.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,7 @@ async def run_analysis(repo_id: str):
 
         file_records_list = []
         symbols_list = []
+        chunks_for_embedding = []
 
         for file_path in files:
             try:
@@ -116,7 +118,14 @@ async def run_analysis(repo_id: str):
                 if parsed.errors:
                     parse_errors += 1
 
-                # Store symbols
+                # Read source text for chunking
+                source_content = ""
+                try:
+                    source_content = file_path.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+
+                # Store symbols & create chunks
                 for sym in parsed.symbols:
                     s_id = str(uuid.uuid4())
                     db.add(Symbol(
@@ -148,6 +157,33 @@ async def run_analysis(repo_id: str):
                         "signature": sym.signature,
                     })
 
+                    # Add symbol chunk for vector embedding
+                    chunk_text = f"File: {relative_path}\nSymbol: {sym.symbol_type} {sym.name}\n"
+                    if sym.signature:
+                        chunk_text += f"Signature: {sym.signature}\n"
+                    if sym.docstring:
+                        chunk_text += f"Docstring: {sym.docstring}\n"
+
+                    chunks_for_embedding.append({
+                        "file_path": relative_path,
+                        "name": sym.name,
+                        "chunk_type": sym.symbol_type,
+                        "line_start": sym.line_start,
+                        "line_end": sym.line_end,
+                        "content": chunk_text,
+                    })
+
+                # If file has content, add full file overview chunk
+                if source_content:
+                    chunks_for_embedding.append({
+                        "file_path": relative_path,
+                        "name": relative_path.split("/")[-1],
+                        "chunk_type": "file",
+                        "line_start": 1,
+                        "line_end": parsed.lines,
+                        "content": f"File: {relative_path}\nLanguage: {parsed.language}\n\n" + source_content[:1500],
+                    })
+
             except Exception as e:
                 logger.warning(f"Failed to parse {file_path}: {e}")
                 parse_errors += 1
@@ -166,7 +202,14 @@ async def run_analysis(repo_id: str):
         except Exception as e:
             logger.warning(f"Neo4j graph building failed: {e}")
 
-        # ── 7. Update repository stats ────────────────────────────
+        # ── 7. Generate Vector Embeddings in Qdrant ────────────────
+        await _update_status(db, repo_id, RepoStatus.embedding, "Generating vector embeddings…")
+        try:
+            vector_service.index_chunks(repo_id, chunks_for_embedding)
+        except Exception as e:
+            logger.warning(f"Vector embedding failed: {e}")
+
+        # ── 8. Update repository status to Ready ──────────────────
         result = await db.execute(select(Repository).where(Repository.id == repo_id))
         repo = result.scalar_one_or_none()
         if repo:

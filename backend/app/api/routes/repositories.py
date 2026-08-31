@@ -1,6 +1,7 @@
 import re
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -13,8 +14,14 @@ from app.api.schemas import RepositoryCreate, RepositoryOut
 from app.api.deps import get_current_user
 from app.services.ingestion_service import run_analysis
 from app.graph.neo4j_service import neo4j_service
+from app.retrieval.hybrid_search import hybrid_search
 
 router = APIRouter()
+
+
+class SearchRequest(BaseModel):
+    query: str
+    limit: Optional[int] = 15
 
 
 def _extract_repo_name(github_url: str) -> str:
@@ -190,10 +197,8 @@ async def get_repository_graph(
 ):
     await _get_owned_repo(db, repo_id, current_user.id)
 
-    # 1. Try fetching from Neo4j
     data = neo4j_service.get_graph_data(repo_id, max_nodes=limit)
 
-    # 2. Fallback: generate graph from SQL symbols & file records if Neo4j is empty or unready
     if not data or not data.get("nodes"):
         result_files = await db.execute(select(FileRecord).where(FileRecord.repo_id == repo_id).limit(40))
         files = result_files.scalars().all()
@@ -204,7 +209,6 @@ async def get_repository_graph(
         nodes = []
         edges = []
 
-        # Add file nodes
         file_node_ids = {}
         for idx, f in enumerate(files):
             nid = f"file_{f.id}"
@@ -220,7 +224,6 @@ async def get_repository_graph(
                 }
             })
 
-        # Add symbol nodes & DEFINES edges
         for s in symbols:
             sid = f"sym_{s.id}"
             nodes.append({
@@ -234,7 +237,6 @@ async def get_repository_graph(
                     "nodeType": s.symbol_type.capitalize()
                 }
             })
-            # Connect file -> symbol
             if s.file_path in file_node_ids:
                 edges.append({
                     "id": f"e_{file_node_ids[s.file_path]}_{sid}_DEFINES",
@@ -246,6 +248,20 @@ async def get_repository_graph(
         data = {"nodes": nodes, "edges": edges}
 
     return data
+
+
+# ── Semantic Search Endpoint ──────────────────────────────────
+
+@router.post("/{repo_id}/search")
+async def search_repository(
+    repo_id: str,
+    body: SearchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repo(db, repo_id, current_user.id)
+    results = await hybrid_search(db, repo_id, body.query, top_k=body.limit or 15)
+    return {"query": body.query, "results": results}
 
 
 # ── Helpers ───────────────────────────────────────────────────
