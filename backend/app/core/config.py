@@ -1,5 +1,16 @@
 from pydantic_settings import BaseSettings
 from typing import List
+from pathlib import Path
+
+# Search for .env file in current dir, then parent dirs
+def _find_env_file() -> str:
+    current = Path(__file__).parent
+    for _ in range(4):  # walk up up to 4 levels
+        candidate = current / ".env"
+        if candidate.exists():
+            return str(candidate)
+        current = current.parent
+    return ".env"  # fallback
 
 
 class Settings(BaseSettings):
@@ -32,10 +43,10 @@ class Settings(BaseSettings):
     github_token: str = ""
 
     # CORS
-    cors_origins: List[str] = ["http://localhost:3000"]
+    cors_origins: List[str] = ["http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000"]
 
     class Config:
-        env_file = ".env"
+        env_file = _find_env_file()
         extra = "ignore"
 
 

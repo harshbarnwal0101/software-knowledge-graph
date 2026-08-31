@@ -70,28 +70,40 @@ class Neo4jService:
 
             # 3. Create File Nodes & CONTAINS relationships
             file_map = {}
+            files_batch = []
             for f in file_records:
                 node_id = f"file_{f['id']}"
                 file_map[f['path']] = node_id
+                files_batch.append({
+                    "node_id": node_id,
+                    "path": f['path'],
+                    "language": f['language'],
+                    "lines": f['lines'],
+                    "name": f['path'].split('/')[-1]
+                })
+
+            if files_batch:
                 session.run(
                     """
                     MATCH (r:Repository {id: $repo_id})
-                    CREATE (f:File {
-                        id: $node_id,
+                    UNWIND $batch AS f
+                    CREATE (file:File {
+                        id: f.node_id,
                         repo_id: $repo_id,
-                        path: $path,
-                        language: $language,
-                        lines: $lines,
-                        name: $name
+                        path: f.path,
+                        language: f.language,
+                        lines: f.lines,
+                        name: f.name
                     })
-                    CREATE (r)-[:CONTAINS]->(f)
+                    CREATE (r)-[:CONTAINS]->(file)
                     """,
-                    repo_id=repo_id, node_id=node_id, path=f['path'],
-                    language=f['language'], lines=f['lines'], name=f['path'].split('/')[-1]
+                    repo_id=repo_id, batch=files_batch
                 )
 
             # 4. Create Symbol Nodes (Class, Function, Method) & DEFINES relationships
             symbol_node_map = {}
+            symbols_by_type = {}
+            
             for s in symbols:
                 stype = s['type'].capitalize()
                 node_id = f"sym_{s['id']}"
@@ -100,32 +112,45 @@ class Neo4jService:
                     symbol_node_map[s['qualified_name']] = node_id
 
                 file_node_id = file_map.get(s['file_path'])
+                if not file_node_id:
+                    continue
+                    
+                if stype not in symbols_by_type:
+                    symbols_by_type[stype] = []
+                    
+                symbols_by_type[stype].append({
+                    "file_node_id": file_node_id,
+                    "node_id": node_id,
+                    "name": s['name'],
+                    "qualified_name": s.get('qualified_name', s['name']),
+                    "file_path": s['file_path'],
+                    "line_start": s['line_start'],
+                    "line_end": s['line_end'],
+                    "signature": s.get('signature', '')
+                })
 
-                # Create node dynamically with label (Class/Function/Method/Import)
-                cypher = f"""
-                MATCH (f:File {{id: $file_node_id}})
-                CREATE (s:{stype} {{
-                    id: $node_id,
-                    repo_id: $repo_id,
-                    name: $name,
-                    qualified_name: $qualified_name,
-                    file_path: $file_path,
-                    line_start: $line_start,
-                    line_end: $line_end,
-                    signature: $signature
-                }})
-                CREATE (f)-[:DEFINES]->(s)
-                """
-                if file_node_id:
-                    session.run(
-                        cypher,
-                        file_node_id=file_node_id, node_id=node_id, repo_id=repo_id,
-                        name=s['name'], qualified_name=s.get('qualified_name', s['name']),
-                        file_path=s['file_path'], line_start=s['line_start'],
-                        line_end=s['line_end'], signature=s.get('signature', '')
-                    )
+            for stype, batch in symbols_by_type.items():
+                session.run(
+                    f"""
+                    UNWIND $batch AS s
+                    MATCH (f:File {{id: s.file_node_id}})
+                    CREATE (sym:{stype} {{
+                        id: s.node_id,
+                        repo_id: $repo_id,
+                        name: s.name,
+                        qualified_name: s.qualified_name,
+                        file_path: s.file_path,
+                        line_start: s.line_start,
+                        line_end: s.line_end,
+                        signature: s.signature
+                    }})
+                    CREATE (f)-[:DEFINES]->(sym)
+                    """,
+                    repo_id=repo_id, batch=batch
+                )
 
             # 5. Extract IMPORTS & CALLS relationships
+            imports_batch = []
             for s in symbols:
                 if s['type'] == "import":
                     # Connect File -> File / Module
@@ -139,13 +164,20 @@ class Neo4jService:
 
                     file_node_id = file_map.get(s['file_path'])
                     if file_node_id and target_file_id:
-                        session.run(
-                            """
-                            MATCH (src:File {id: $src_id}), (dst:File {id: $dst_id})
-                            MERGE (src)-[:IMPORTS]->(dst)
-                            """,
-                            src_id=file_node_id, dst_id=target_file_id
-                        )
+                        imports_batch.append({
+                            "src_id": file_node_id,
+                            "dst_id": target_file_id
+                        })
+                        
+            if imports_batch:
+                session.run(
+                    """
+                    UNWIND $batch AS rel
+                    MATCH (src:File {id: rel.src_id}), (dst:File {id: rel.dst_id})
+                    MERGE (src)-[:IMPORTS]->(dst)
+                    """,
+                    batch=imports_batch
+                )
 
             logger.info(f"Graph constructed in Neo4j for repository {repo_id}")
 

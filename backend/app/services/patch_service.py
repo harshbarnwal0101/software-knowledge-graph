@@ -4,9 +4,11 @@ Never modifies user repository without explicit approval.
 """
 import difflib
 import logging
+import re
 from typing import Dict, Any
 
 from app.services.git_service import get_repo_path
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +27,57 @@ def generate_patch(repo_id: str, file_path: str, instruction: str) -> Dict[str, 
         original_content = target.read_text(encoding="utf-8", errors="replace")
         original_lines = original_content.splitlines(keepends=True)
 
-        # Simple demonstration patch: append instruction comment or function wrapper
-        modified_lines = list(original_lines)
-        comment = f"\n# Proposed modification: {instruction}\n"
-        modified_lines.append(comment)
+        modified_content = original_content
+        llm = None
+        if settings.openai_api_key:
+            try:
+                from openai import OpenAI
+                llm = OpenAI(
+                    api_key=settings.openai_api_key,
+                    base_url=settings.openai_base_url,
+                )
+            except Exception:
+                pass
+        
+        if llm:
+            try:
+                prompt_messages = [
+                    {
+                        "role": "system", 
+                        "content": "You are an expert software engineer. Modify the provided code according to the instruction. Output ONLY the complete modified code, surrounded by ``` code block syntax."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Instruction: {instruction}\n\nOriginal Code:\n```\n{original_content}\n```"
+                    }
+                ]
+                res = llm.chat.completions.create(
+                    model=settings.llm_model,
+                    messages=prompt_messages,
+                    temperature=0.2,
+                )
+                answer_text = res.choices[0].message.content
+                
+                # Extract code from Markdown block
+                match = re.search(r"```[a-zA-Z]*\n(.*?)```", answer_text, re.DOTALL)
+                if match:
+                    modified_content = match.group(1)
+                else:
+                    modified_content = answer_text.strip()
+            except Exception as e:
+                logger.warning(f"LLM patch generation failed: {e}")
+                modified_content = original_content + f"\n# Proposed modification: {instruction}\n"
+        else:
+            # Fallback when no API key
+            modified_content = original_content + f"\n# Proposed modification: {instruction}\n"
+
+        # Ensure trailing newline is handled properly based on original
+        if not modified_content.endswith("\n") and original_content.endswith("\n"):
+            modified_content += "\n"
+        elif modified_content.endswith("\n") and not original_content.endswith("\n"):
+            modified_content = modified_content.rstrip("\n")
+
+        modified_lines = modified_content.splitlines(keepends=True)
 
         diff = "".join(difflib.unified_diff(
             original_lines,

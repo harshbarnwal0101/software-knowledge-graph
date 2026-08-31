@@ -4,6 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Sidebar from "@/components/Sidebar";
 import api, { repoApi } from "@/lib/api";
+import dagre from "dagre";
 
 import {
   ReactFlow,
@@ -90,17 +91,31 @@ const nodeTypes = {
 
 // ── Graph Layout Helper ────────────────────────────────────────
 
-function autoLayoutNodes(rawNodes) {
-  // Grid / ring layout algorithm for nodes
-  const cols = Math.ceil(Math.sqrt(rawNodes.length));
-  return rawNodes.map((n, i) => {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
+function getLayoutedElements(nodes, edges, direction = 'TB') {
+  const dagreGraph = new dagre.graphlib.Graph();
+  dagreGraph.setDefaultEdgeLabel(() => ({}));
+  
+  // Set the layout direction (TB = top to bottom)
+  dagreGraph.setGraph({ rankdir: direction });
+
+  nodes.forEach((node) => {
+    // Approximate node dimensions based on CustomNode
+    dagreGraph.setNode(node.id, { width: 160, height: 75 });
+  });
+
+  edges.forEach((edge) => {
+    dagreGraph.setEdge(edge.source, edge.target);
+  });
+
+  dagre.layout(dagreGraph);
+
+  return nodes.map((node) => {
+    const nodeWithPosition = dagreGraph.node(node.id);
     return {
-      ...n,
+      ...node,
       position: {
-        x: col * 200 + (row % 2 === 0 ? 0 : 30),
-        y: row * 100,
+        x: nodeWithPosition.x - 80,
+        y: nodeWithPosition.y - 37.5,
       },
     };
   });
@@ -131,7 +146,7 @@ export default function GraphExplorerPage() {
     ])
       .then(([repoRes, graphRes]) => {
         setRepo(repoRes.data);
-        const layoutedNodes = autoLayoutNodes(graphRes.data.nodes || []);
+        const layoutedNodes = getLayoutedElements(graphRes.data.nodes || [], graphRes.data.edges || []);
         setNodes(layoutedNodes);
         setEdges(graphRes.data.edges || []);
       })
