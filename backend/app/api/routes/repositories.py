@@ -15,6 +15,7 @@ from app.api.deps import get_current_user
 from app.services.ingestion_service import run_analysis
 from app.graph.neo4j_service import neo4j_service
 from app.retrieval.hybrid_search import hybrid_search
+from app.agents.codebase_agent import codebase_agent
 
 router = APIRouter()
 
@@ -22,6 +23,10 @@ router = APIRouter()
 class SearchRequest(BaseModel):
     query: str
     limit: Optional[int] = 15
+
+
+class ChatRequest(BaseModel):
+    question: str
 
 
 def _extract_repo_name(github_url: str) -> str:
@@ -119,7 +124,7 @@ async def analyze_repository(
     return {"message": "Analysis started", "repo_id": repo_id}
 
 
-# ── Files ─────────────────────────────────────────────────────
+# ── Files & Symbols ───────────────────────────────────────────
 
 @router.get("/{repo_id}/files")
 async def list_files(
@@ -133,18 +138,10 @@ async def list_files(
     )
     files = result.scalars().all()
     return [
-        {
-            "id": f.id,
-            "path": f.path,
-            "language": f.language,
-            "lines": f.lines,
-            "size_bytes": f.size_bytes,
-        }
+        {"id": f.id, "path": f.path, "language": f.language, "lines": f.lines, "size_bytes": f.size_bytes}
         for f in files
     ]
 
-
-# ── Symbols ───────────────────────────────────────────────────
 
 @router.get("/{repo_id}/symbols")
 async def list_symbols(
@@ -158,7 +155,6 @@ async def list_symbols(
     await _get_owned_repo(db, repo_id, current_user.id)
 
     query = select(Symbol).where(Symbol.repo_id == repo_id)
-
     if symbol_type:
         query = query.where(Symbol.symbol_type == symbol_type)
     if search:
@@ -170,17 +166,9 @@ async def list_symbols(
 
     return [
         {
-            "id": s.id,
-            "type": s.symbol_type,
-            "name": s.name,
-            "qualified_name": s.qualified_name,
-            "parent_name": s.parent_name,
-            "file_path": s.file_path,
-            "language": s.language,
-            "line_start": s.line_start,
-            "line_end": s.line_end,
-            "signature": s.signature,
-            "docstring": s.docstring,
+            "id": s.id, "type": s.symbol_type, "name": s.name, "qualified_name": s.qualified_name,
+            "parent_name": s.parent_name, "file_path": s.file_path, "language": s.language,
+            "line_start": s.line_start, "line_end": s.line_end, "signature": s.signature, "docstring": s.docstring
         }
         for s in symbols
     ]
@@ -196,54 +184,25 @@ async def get_repository_graph(
     current_user: User = Depends(get_current_user),
 ):
     await _get_owned_repo(db, repo_id, current_user.id)
-
     data = neo4j_service.get_graph_data(repo_id, max_nodes=limit)
 
     if not data or not data.get("nodes"):
         result_files = await db.execute(select(FileRecord).where(FileRecord.repo_id == repo_id).limit(40))
         files = result_files.scalars().all()
-
         result_symbols = await db.execute(select(Symbol).where(Symbol.repo_id == repo_id).limit(100))
         symbols = result_symbols.scalars().all()
 
-        nodes = []
-        edges = []
-
-        file_node_ids = {}
-        for idx, f in enumerate(files):
+        nodes, edges, file_node_ids = [], [], {}
+        for f in files:
             nid = f"file_{f.id}"
             file_node_ids[f.path] = nid
-            nodes.append({
-                "id": nid,
-                "type": "file",
-                "data": {
-                    "label": f.path.split("/")[-1],
-                    "path": f.path,
-                    "language": f.language,
-                    "nodeType": "File"
-                }
-            })
+            nodes.append({"id": nid, "type": "file", "data": {"label": f.path.split("/")[-1], "path": f.path, "language": f.language, "nodeType": "File"}})
 
         for s in symbols:
             sid = f"sym_{s.id}"
-            nodes.append({
-                "id": sid,
-                "type": s.symbol_type,
-                "data": {
-                    "label": s.name,
-                    "path": s.file_path,
-                    "line": s.line_start,
-                    "signature": s.signature,
-                    "nodeType": s.symbol_type.capitalize()
-                }
-            })
+            nodes.append({"id": sid, "type": s.symbol_type, "data": {"label": s.name, "path": s.file_path, "line": s.line_start, "signature": s.signature, "nodeType": s.symbol_type.capitalize()}})
             if s.file_path in file_node_ids:
-                edges.append({
-                    "id": f"e_{file_node_ids[s.file_path]}_{sid}_DEFINES",
-                    "source": file_node_ids[s.file_path],
-                    "target": sid,
-                    "label": "DEFINES"
-                })
+                edges.append({"id": f"e_{file_node_ids[s.file_path]}_{sid}_DEFINES", "source": file_node_ids[s.file_path], "target": sid, "label": "DEFINES"})
 
         data = {"nodes": nodes, "edges": edges}
 
@@ -262,6 +221,20 @@ async def search_repository(
     await _get_owned_repo(db, repo_id, current_user.id)
     results = await hybrid_search(db, repo_id, body.query, top_k=body.limit or 15)
     return {"query": body.query, "results": results}
+
+
+# ── AI Agent Chat Endpoint ────────────────────────────────────
+
+@router.post("/{repo_id}/chat")
+async def chat_with_repository(
+    repo_id: str,
+    body: ChatRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repo(db, repo_id, current_user.id)
+    response = await codebase_agent.answer_question(repo_id, body.question)
+    return response
 
 
 # ── Helpers ───────────────────────────────────────────────────
