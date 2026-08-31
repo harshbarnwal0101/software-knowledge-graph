@@ -88,9 +88,20 @@ export default function RepositoryPage() {
     fetchRepo().then((r) => {
       setLoading(false);
       if (!r) return;
-      const inProgress = ["cloning","parsing","building_graph","embedding","pending"].includes(r.status);
-      if (inProgress) { setAnalyzing(true); startPolling(); }
-      else if (r.status === "ready") fetchDetails();
+      const inProgress = ["cloning","parsing","building_graph","embedding"].includes(r.status);
+      if (inProgress) {
+        // Already running — just poll for updates
+        setAnalyzing(true);
+        startPolling();
+      } else if (r.status === "pending") {
+        // Queued but not started yet — kick off analysis automatically
+        setAnalyzing(true);
+        repoApi.analyze(r.id)
+          .then(() => startPolling())
+          .catch(() => { setAnalyzing(false); });
+      } else if (r.status === "ready") {
+        fetchDetails();
+      }
     });
 
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
