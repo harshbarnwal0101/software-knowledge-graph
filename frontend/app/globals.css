@@ -466,3 +466,6 @@ hr {
   .grid-3 { grid-template-columns: repeat(2, 1fr); }
   .sidebar { display: none; }
 }
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+

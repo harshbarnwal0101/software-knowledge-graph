@@ -35,7 +35,19 @@ export default function RepositoryPage() {
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
+  const [logs, setLogs] = useState([]);
   const pollRef = useRef(null);
+
+  useEffect(() => {
+    if (repo && repo.status_message) {
+      setLogs((prev) => {
+        if (prev.length === 0 || prev[prev.length - 1].message !== repo.status_message) {
+          return [...prev, { time: new Date().toLocaleTimeString(), message: repo.status_message }];
+        }
+        return prev;
+      });
+    }
+  }, [repo?.status_message]);
 
   const fetchRepo = useCallback(async () => {
     try {
@@ -190,6 +202,27 @@ export default function RepositoryPage() {
                   {repo.status_message}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Terminal Sandbox */}
+          {(isInProgress || logs.length > 0) && (
+            <div className="card" style={{ background: "#0f172a", color: "#e2e8f0", padding: "1rem", fontFamily: "monospace", fontSize: "0.875rem", marginBottom: "1.5rem", borderRadius: "0.5rem" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #334155", paddingBottom: "0.5rem", marginBottom: "0.75rem" }}>
+                <div style={{ fontWeight: "bold", color: "#38bdf8" }}>Analysis Terminal</div>
+                {isInProgress && <Spinner />}
+              </div>
+              <div style={{ minHeight: "120px", maxHeight: "250px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                {logs.map((log, i) => (
+                  <div key={i}>
+                    <span style={{ color: "#64748b", marginRight: "0.5rem" }}>[{log.time}]</span>
+                    <span style={{ color: log.message.toLowerCase().includes("failed") ? "#ef4444" : "#a7f3d0" }}>{log.message}</span>
+                  </div>
+                ))}
+                {isInProgress && (
+                  <div style={{ color: "#94a3b8", animation: "pulse 1.5s infinite" }}>_</div>
+                )}
+              </div>
             </div>
           )}
 
