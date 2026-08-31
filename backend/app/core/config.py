@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24  # 1 day
 
     # PostgreSQL
-    database_url: str = "postgresql+asyncpg://skguser:skgpassword@localhost:5432/software_knowledge_graph"
+    database_url: str = "postgresql+asyncpg://skguser:skgpassword@127.0.0.1:5433/software_knowledge_graph?ssl=disable"
 
     # Neo4j
     neo4j_uri: str = "bolt://localhost:7687"
