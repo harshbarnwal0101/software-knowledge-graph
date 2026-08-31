@@ -3,7 +3,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.core.database import get_db
 from app.models.user import User
@@ -14,6 +14,7 @@ from app.api.schemas import RepositoryCreate, RepositoryOut
 from app.api.deps import get_current_user
 from app.services.ingestion_service import run_analysis
 from app.services.impact_service import analyze_impact
+from app.services.patch_service import generate_patch
 from app.services.git_service import get_repo_path, get_git_log
 from app.graph.neo4j_service import neo4j_service
 from app.retrieval.hybrid_search import hybrid_search
@@ -33,6 +34,11 @@ class ChatRequest(BaseModel):
 
 class ImpactRequest(BaseModel):
     target_name: str
+
+
+class ModifyCodeRequest(BaseModel):
+    file_path: str
+    instruction: str
 
 
 def _extract_repo_name(github_url: str) -> str:
@@ -215,7 +221,7 @@ async def get_repository_graph(
     return data
 
 
-# ── Search Endpoint ───────────────────────────────────────────
+# ── Search & Chat ──────────────────────────────────────────────
 
 @router.post("/{repo_id}/search")
 async def search_repository(
@@ -229,8 +235,6 @@ async def search_repository(
     return {"query": body.query, "results": results}
 
 
-# ── AI Agent Chat Endpoint ────────────────────────────────────
-
 @router.post("/{repo_id}/chat")
 async def chat_with_repository(
     repo_id: str,
@@ -243,7 +247,7 @@ async def chat_with_repository(
     return response
 
 
-# ── Impact Analysis Endpoint ──────────────────────────────────
+# ── Impact & History ──────────────────────────────────────────
 
 @router.post("/{repo_id}/impact-analysis")
 async def get_impact_analysis(
@@ -253,11 +257,8 @@ async def get_impact_analysis(
     current_user: User = Depends(get_current_user),
 ):
     await _get_owned_repo(db, repo_id, current_user.id)
-    result = await analyze_impact(db, repo_id, body.target_name)
-    return result
+    return await analyze_impact(db, repo_id, body.target_name)
 
-
-# ── Git History Insights Endpoint ─────────────────────────────
 
 @router.get("/{repo_id}/history")
 async def get_repository_history(
@@ -266,9 +267,57 @@ async def get_repository_history(
     current_user: User = Depends(get_current_user),
 ):
     await _get_owned_repo(db, repo_id, current_user.id)
-    repo_path = get_repo_path(repo_id)
-    commits = get_git_log(repo_path, max_commits=30)
-    return {"commits": commits}
+    return {"commits": get_git_log(get_repo_path(repo_id), max_commits=30)}
+
+
+# ── Repository Health & Hotspots ──────────────────────────────
+
+@router.get("/{repo_id}/health")
+async def get_repository_health(
+    repo_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repo(db, repo_id, current_user.id)
+
+    # Large files (> 300 lines)
+    large_files_res = await db.execute(
+        select(FileRecord).where(FileRecord.repo_id == repo_id, FileRecord.lines > 300).limit(10)
+    )
+    large_files = [f.path for f in large_files_res.scalars().all()]
+
+    # Missing docstrings
+    missing_docs_res = await db.execute(
+        select(Symbol).where(
+            Symbol.repo_id == repo_id,
+            Symbol.symbol_type.in_(["class", "function"]),
+            Symbol.docstring == None
+        ).limit(10)
+    )
+    missing_docs = [s.name for s in missing_docs_res.scalars().all()]
+
+    return {
+        "health_score": max(50, 100 - (len(large_files) * 5) - (len(missing_docs) * 2)),
+        "large_files": large_files,
+        "missing_docstrings": missing_docs,
+        "hotspot_warnings": [
+            f"File '{f}' exceeds 300 lines of code — consider modularizing." for f in large_files[:3]
+        ]
+    }
+
+
+# ── Proposed Patch Generation ─────────────────────────────────
+
+@router.post("/{repo_id}/modify-code")
+async def proposed_code_modification(
+    repo_id: str,
+    body: ModifyCodeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repo(db, repo_id, current_user.id)
+    patch = generate_patch(repo_id, body.file_path, body.instruction)
+    return patch
 
 
 # ── Helpers ───────────────────────────────────────────────────
