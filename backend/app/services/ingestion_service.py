@@ -52,7 +52,8 @@ async def run_analysis(repo_id: str):
         # ── 2. Clone ─────────────────────────────────────────────
         await _update_status(db, repo_id, RepoStatus.cloning, "Cloning repository…")
         try:
-            repo_path = clone_repository(repo_id, repo.github_url)
+            import asyncio
+            repo_path = await asyncio.to_thread(clone_repository, repo_id, repo.github_url)
         except Exception as e:
             logger.error(f"Clone failed for {repo_id}: {e}")
             await _update_status(db, repo_id, RepoStatus.failed, f"Clone failed: {str(e)[:200]}")
@@ -61,7 +62,7 @@ async def run_analysis(repo_id: str):
         # ── 3. Discover files ─────────────────────────────────────
         await _update_status(db, repo_id, RepoStatus.parsing, "Discovering and parsing files…")
         try:
-            files = registry.discover_files(repo_path)
+            files = await asyncio.to_thread(registry.discover_files, repo_path)
             logger.info(f"Discovered {len(files)} source files in {repo.name}")
         except Exception as e:
             logger.error(f"File discovery failed: {e}")
@@ -85,7 +86,7 @@ async def run_analysis(repo_id: str):
 
         for file_path in files:
             try:
-                parsed = registry.parse_file(file_path)
+                parsed = await asyncio.to_thread(registry.parse_file, file_path)
                 if not parsed:
                     continue
 
@@ -193,11 +194,12 @@ async def run_analysis(repo_id: str):
         # ── 6. Build Knowledge Graph in Neo4j ──────────────────────
         await _update_status(db, repo_id, RepoStatus.building_graph, "Building knowledge graph…")
         try:
-            neo4j_service.build_repository_graph(
-                repo_id=repo_id,
-                repo_name=repo.name,
-                file_records=file_records_list,
-                symbols=symbols_list,
+            await asyncio.to_thread(
+                neo4j_service.build_repository_graph,
+                repo_id,
+                repo.name,
+                file_records_list,
+                symbols_list,
             )
         except Exception as e:
             logger.warning(f"Neo4j graph building failed: {e}")
@@ -205,7 +207,7 @@ async def run_analysis(repo_id: str):
         # ── 7. Generate Vector Embeddings in Qdrant ────────────────
         await _update_status(db, repo_id, RepoStatus.embedding, "Generating vector embeddings…")
         try:
-            vector_service.index_chunks(repo_id, chunks_for_embedding)
+            await asyncio.to_thread(vector_service.index_chunks, repo_id, chunks_for_embedding)
         except Exception as e:
             logger.warning(f"Vector embedding failed: {e}")
 

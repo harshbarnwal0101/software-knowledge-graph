@@ -48,12 +48,17 @@ def clone_repository(repo_id: str, github_url: str) -> Path:
 
     logger.info(f"Cloning {github_url} → {dest}")
 
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = "echo"
+    
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=300,  # 5 minute timeout
+            env=env
         )
         if result.returncode != 0:
             raise RuntimeError(f"git clone failed: {result.stderr.strip()}")
